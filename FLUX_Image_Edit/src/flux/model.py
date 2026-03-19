@@ -101,16 +101,28 @@ class Flux(nn.Module):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
 
-        for block in self.double_blocks:
+        multi_gpu = getattr(self, '_multi_gpu', False)
+
+        for i, block in enumerate(self.double_blocks):
+            if multi_gpu:
+                dev = self._block_devices[i]
+                img, txt, vec, pe = img.to(dev), txt.to(dev), vec.to(dev), pe.to(dev)
             img, txt = block(img=img, txt=txt, vec=vec, pe=pe, info=info)
 
         cnt = 0
-        img = torch.cat((txt, img), 1) 
+        img = torch.cat((txt, img), 1)
         info['type'] = 'single'
-        for block in self.single_blocks:
+        for i, block in enumerate(self.single_blocks):
+            if multi_gpu:
+                dev = self._block_devices[self._num_double + i]
+                img, vec, pe = img.to(dev), vec.to(dev), pe.to(dev)
             info['id'] = cnt
             img, info = block(img, vec=vec, pe=pe, info=info)
             cnt += 1
+
+        if multi_gpu:
+            img = img.to(self._primary_device)
+            vec = vec.to(self._primary_device)
 
         img = img[:, txt.shape[1] :, ...]
 
