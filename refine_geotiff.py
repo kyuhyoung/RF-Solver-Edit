@@ -104,26 +104,17 @@ def read_geotiff(path):
 
 
 def save_geotiff(path, data_float, profile, stretch_params):
-    """Save float32 0-1 image back to GeoTIFF, reversing the percentile stretch."""
-    p2 = stretch_params["p2"]
-    p98 = stretch_params["p98"]
-    dtype = profile["dtype"]
-
-    data = data_float.astype(np.float64)
-    for c in range(data.shape[2]):
-        rng = p98[c] - p2[c]
-        if rng < 1:
-            rng = 1
-        data[:, :, c] = data[:, :, c] * rng + p2[c]
-
-    data_out = np.clip(data, 0, np.iinfo(np.dtype(dtype)).max if np.issubdtype(np.dtype(dtype), np.integer) else data.max())
-    data_out = data_out.astype(np.dtype(dtype))
+    """Save float32 0-1 image back to GeoTIFF as uint8."""
+    # Data is already 0-1 from the generation model, just scale to 0-255
+    data_out = np.clip(data_float * 255, 0, 255).astype(np.uint8)
 
     # (H, W, C) -> (C, H, W)
     data_out = data_out.transpose(2, 0, 1)
 
     out_profile = profile.copy()
+    out_profile["dtype"] = "uint8"
     out_profile["count"] = 3
+    out_profile["nodata"] = None
     out_profile["compress"] = "lzw"
 
     with rasterio.open(path, "w", **out_profile) as dst:
