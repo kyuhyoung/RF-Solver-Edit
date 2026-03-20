@@ -98,6 +98,7 @@ def read_geotiff(path):
         for ch in range(data_f.shape[2]):
             data_f[:, :, ch][mask] = data_f[:, :, ch][nearest_idx[0][mask], nearest_idx[1][mask]]
         print(f"[read_geotiff] filled {mask.sum()} nodata pixels with nearest valid pixels")
+        stretch_params["mask"] = None
 
     return data_f, profile, stretch_params
 
@@ -165,21 +166,29 @@ def make_blend_weight(tile_h, tile_w, overlap):
 @torch.inference_mode()
 def encode_image(img_np, ae, device):
     """Encode numpy HxWx3 float32 0-1 image to FLUX latent."""
+    ae.to(device)
     img_t = torch.from_numpy(img_np).permute(2, 0, 1).float() * 2 - 1  # to [-1, 1]
     img_t = img_t.unsqueeze(0).to(device)
-    return ae.encode(img_t).to(torch.bfloat16)
+    result = ae.encode(img_t).to(torch.bfloat16)
+    ae.cpu()
+    torch.cuda.empty_cache()
+    return result
 
 
 @torch.inference_mode()
 def decode_latent(latent, ae, device):
     """Decode FLUX latent to numpy HxWx3 float32 0-1 image."""
+    ae.to(device)
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         x = ae.decode(latent)
+    ae.cpu()
+    torch.cuda.empty_cache()
     x = x.clamp(-1, 1)
     x = rearrange(x[0], "c h w -> h w c")
     return ((x + 1.0) / 2.0).cpu().float().numpy()
 
 
+@torch.inference_mode()
 def refine_tile(tile_img, prompt_cache, model, ae, args):
     """Run RF-Solver inversion + denoising on a single tile."""
     h, w = tile_img.shape[:2]
@@ -234,6 +243,7 @@ def refine_tile(tile_img, prompt_cache, model, ae, args):
 
     # RF-Solver Inversion (image -> noise)
     z, info = denoise(model, **inp_src, timesteps=timesteps, guidance=1, inverse=True, info=info)
+    torch.cuda.empty_cache()
 
     # RF-Solver Denoising (noise -> refined image, with feature sharing)
     inp_tar["img"] = z
@@ -273,10 +283,7 @@ def main():
     gamma = args.gamma
     if gamma > 0 and gamma != 1.0:
         print(f"Applying gamma correction: {gamma}")
-        mask = stretch_params["mask"]
         img = np.power(np.clip(img, 0, 1), gamma)
-        if mask is not None:
-            img[mask] = 0
 
     # Save preview
     if args.save_preview:
@@ -312,8 +319,8 @@ def main():
     del t5, clip
     print("Prompts encoded.")
 
-    # Load AE on cuda:0 (small, ~200MB)
-    ae = load_ae(args.name, device="cuda:0")
+    # Load AE (move to GPU only during encode/decode to save VRAM)
+    ae = load_ae(args.name, device="cpu")
 
     # Load and distribute FLUX model
     model = load_flow_model(args.name, device="cpu")

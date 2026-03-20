@@ -18,7 +18,20 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=0,1,2
+# Pick first free GPU in order 7,6,5,4,3,2,1,0
+pick_free_gpu() {
+    for g in 7 6 5 4 3 2 1 0; do
+        local mem
+        mem=$(nvidia-smi --id=$g --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
+        if [ "$mem" -le 100 ]; then
+            echo "$g"
+            return
+        fi
+    done
+    echo "7"  # fallback
+}
+export CUDA_VISIBLE_DEVICES=$(pick_free_gpu)
+export HF_HOME=/data/kevin_workspace/.cache/huggingface
 
 # Colors
 GREEN='\033[0;32m'
@@ -35,7 +48,7 @@ echo ""
 echo "========== $(date '+%Y-%m-%d %H:%M:%S') =========="
 
 # Default input
-DEFAULT_INPUT="/data/satellite/seoul/gangnam/samsung/gwarp_out_ps_ba/fused_top_naive.tif"
+DEFAULT_INPUT="${SCRIPT_DIR}/input/fused_top_naive.tif"
 
 INPUT_FILE="${1:-$DEFAULT_INPUT}"
 if [ $# -gt 0 ]; then shift; fi
@@ -63,11 +76,13 @@ mkdir -p "$OUTPUT_DIR"
 
 # Default parameters
 DEFAULT_NUM_STEPS="25"
-DEFAULT_INJECT="20"
-DEFAULT_GUIDANCE="2.0"
-DEFAULT_TILE_SIZE="512"
-DEFAULT_OVERLAP="128"
+DEFAULT_INJECT="24"
+DEFAULT_GUIDANCE="1.0"
+DEFAULT_TILE_SIZE="4096"
+DEFAULT_OVERLAP="0"
 DEFAULT_GAMMA="0.7"
+DEFAULT_SRC_PROMPT="Satellite image with black missing regions, noise, blurring, and low resolution"
+DEFAULT_TAR_PROMPT="Complete high resolution satellite image with all areas naturally filled with buildings, roads, and vegetation, sharp details and vivid colors"
 
 # Check if user provided these args
 HAS_NUM_STEPS=false
@@ -76,6 +91,8 @@ HAS_GUIDANCE=false
 HAS_TILE_SIZE=false
 HAS_OVERLAP=false
 HAS_GAMMA=false
+HAS_SRC_PROMPT=false
+HAS_TAR_PROMPT=false
 for arg in "${EXTRA_ARGS[@]}"; do
     case $arg in
         --num_steps) HAS_NUM_STEPS=true ;;
@@ -84,6 +101,8 @@ for arg in "${EXTRA_ARGS[@]}"; do
         --tile_size) HAS_TILE_SIZE=true ;;
         --overlap) HAS_OVERLAP=true ;;
         --gamma) HAS_GAMMA=true ;;
+        --src_prompt) HAS_SRC_PROMPT=true ;;
+        --tar_prompt) HAS_TAR_PROMPT=true ;;
     esac
 done
 
@@ -94,6 +113,8 @@ if [ "$HAS_GUIDANCE" = false ]; then CMD_ARGS+=(--guidance "$DEFAULT_GUIDANCE");
 if [ "$HAS_TILE_SIZE" = false ]; then CMD_ARGS+=(--tile_size "$DEFAULT_TILE_SIZE"); fi
 if [ "$HAS_OVERLAP" = false ]; then CMD_ARGS+=(--overlap "$DEFAULT_OVERLAP"); fi
 if [ "$HAS_GAMMA" = false ]; then CMD_ARGS+=(--gamma "$DEFAULT_GAMMA"); fi
+if [ "$HAS_SRC_PROMPT" = false ]; then CMD_ARGS+=(--src_prompt "$DEFAULT_SRC_PROMPT"); fi
+if [ "$HAS_TAR_PROMPT" = false ]; then CMD_ARGS+=(--tar_prompt "$DEFAULT_TAR_PROMPT"); fi
 
 # Determine actual parameter values for filename postfix
 ACTUAL_INJECT="$DEFAULT_INJECT"
