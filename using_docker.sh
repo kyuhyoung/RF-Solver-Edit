@@ -6,6 +6,7 @@
 #   ./using_docker.sh            # build + run (default)
 #   ./using_docker.sh -nc        # build without cache + run
 #   ./using_docker.sh -nb        # skip build, run only
+#   ./using_docker.sh -r         # reattach to existing container (fast)
 
 # Log file
 LOGFILE="$(dirname "$0")/using_docker.log"
@@ -24,6 +25,7 @@ echo "========== $(date '+%Y-%m-%d %H:%M:%S') =========="
 # Check for options
 NO_CACHE=""
 SKIP_BUILD=false
+REATTACH=false
 
 for arg in "$@"; do
     case $arg in
@@ -35,15 +37,39 @@ for arg in "$@"; do
             SKIP_BUILD=true
             echo -e "${YELLOW}Skipping build...${NC}"
             ;;
+        -r)
+            REATTACH=true
+            echo -e "${YELLOW}Reattaching to existing container...${NC}"
+            ;;
     esac
 done
+
+# Reattach to existing container
+if [ "$REATTACH" = true ]; then
+    existing=$(docker ps -a --filter "name=${docker_name}_" --filter "status=exited" --format "{{.Names}}" | head -1)
+    if [ -z "$existing" ]; then
+        existing=$(docker ps --filter "name=${docker_name}_" --format "{{.Names}}" | head -1)
+        if [ -z "$existing" ]; then
+            echo -e "${RED}No existing container found. Run without -r first.${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}Attaching to running container: ${existing}${NC}"
+        exec 1>/dev/tty 2>/dev/tty
+        docker exec -it ${existing} bash
+    else
+        echo -e "${GREEN}Restarting container: ${existing}${NC}"
+        exec 1>/dev/tty 2>/dev/tty
+        docker start -ai ${existing}
+    fi
+    exit 0
+fi
 
 if [ "$SKIP_BUILD" = false ] && [ -z "$NO_CACHE" ]; then
     echo -e "${YELLOW}Building with cache...${NC}"
 fi
 
 docker_name=rf-solver-edit
-container_name=${docker_name}_$(date +"%y%m%d_%H%M%S")
+container_name=${docker_name}_latest
 dir_cur=/workspace/${PWD##*/}
 dir_data=/raid/HDD/dataset_stereo
 
@@ -83,7 +109,10 @@ echo ""
 exec 1>/dev/tty 2>/dev/tty
 
 #   docker run
-docker run --rm -it --name ${container_name} \
+# Remove old container with same name if exists
+docker rm -f ${container_name} 2>/dev/null
+
+docker run -it --name ${container_name} \
     --shm-size=64g \
     --gpus all \
     -e QT_DEBUG_PLUGINS=1 \
