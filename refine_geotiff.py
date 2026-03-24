@@ -48,10 +48,12 @@ def parse_args():
     parser.add_argument("--name", type=str, default="flux-dev",
                         help="FLUX model name (flux-dev or flux-schnell)")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--no_stretch", action="store_true",
+                        help="Skip percentile stretch and gamma (for 2-pass: input is already processed)")
     return parser.parse_args()
 
 
-def read_geotiff(path):
+def read_geotiff(path, no_stretch=False):
     """Read GeoTIFF, return (numpy HxWx3 float32 0-1, profile, stretch_params)."""
     with rasterio.open(path) as src:
         profile = src.profile.copy()
@@ -63,6 +65,13 @@ def read_geotiff(path):
     # Use first 3 bands only
     if data.shape[2] > 3:
         data = data[:, :, :3]
+
+    if no_stretch:
+        # For 2-pass: input is already processed uint8, just normalize to 0-1
+        data_f = np.clip(data / 255.0, 0, 1).astype(np.float32) if data.max() > 1 else data.astype(np.float32)
+        stretch_params = {"p2": None, "p98": None, "mask": None}
+        print(f"[read_geotiff] no_stretch mode: simple normalization to 0-1")
+        return data_f, profile, stretch_params
 
     # Mask nodata and all-zero pixels
     zero_mask = np.all(data == 0, axis=-1)
@@ -266,12 +275,12 @@ def main():
 
     # Read GeoTIFF
     print("Reading GeoTIFF...")
-    img, profile, stretch_params = read_geotiff(args.input)
+    img, profile, stretch_params = read_geotiff(args.input, no_stretch=args.no_stretch)
     h, w, c = img.shape
     print(f"Image size: {w}x{h}, {c} bands")
 
-    # Gamma correction
-    gamma = args.gamma
+    # Gamma correction (skip for 2-pass)
+    gamma = args.gamma if not args.no_stretch else 1.0
     if gamma > 0 and gamma != 1.0:
         print(f"Applying gamma correction: {gamma}")
         img = np.power(np.clip(img, 0, 1), gamma)
