@@ -69,9 +69,9 @@ if [ "$SKIP_BUILD" = false ] && [ -z "$NO_CACHE" ]; then
 fi
 
 docker_name=rf-solver-edit
-container_name=${docker_name}_latest
+container_name=${docker_name}_$(date +%y%m%d_%H%M%S)
 dir_cur=/workspace/${PWD##*/}
-dir_data=/raid/HDD/dataset_stereo
+dir_data=/data/dataset
 
 echo -e "${GREEN}==================================================${NC}"
 echo -e "${GREEN}  RF-Solver-Edit Docker Container${NC}"
@@ -128,5 +128,5 @@ docker run -it --name ${container_name} \
     -v /etc/shadow:/etc/shadow:ro \
     -v /etc/sudoers.d:/etc/sudoers.d:ro \
     -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-    -v /raid/HDD/pub_models/huggingface:/root/.cache/huggingface \
+    -v /data/kevin_workspace/.cache/huggingface:/root/.cache/huggingface \
     ${docker_name} bash

@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export HF_HOME=/data/kevin_workspace/.cache/huggingface
 
-INPUT="${SCRIPT_DIR}/input/fused_top_naive.tif"
+INPUT="/data/dataset/sat/korea/seoul/samsung/fused_top_naive.tif"
 OUTPUT_DIR="${SCRIPT_DIR}/output/grid_search"
 LOG_DIR="${SCRIPT_DIR}/output/grid_search/logs"
 GRID_LOG="${SCRIPT_DIR}/grid_search.log"

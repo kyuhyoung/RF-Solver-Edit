@@ -48,7 +48,7 @@ echo ""
 echo "========== $(date '+%Y-%m-%d %H:%M:%S') =========="
 
 # Default input
-DEFAULT_INPUT="${SCRIPT_DIR}/input/fused_top_naive.tif"
+DEFAULT_INPUT="/data/dataset/sat/korea/seoul/samsung/fused_top_naive.tif"
 
 INPUT_FILE="${1:-$DEFAULT_INPUT}"
 if [ $# -gt 0 ]; then shift; fi

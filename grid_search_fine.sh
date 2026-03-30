@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export HF_HOME=/data/kevin_workspace/.cache/huggingface
 PYTHON=/data/kevin_workspace/envs/rfsolver/bin/python3
 
-INPUT="${SCRIPT_DIR}/input/fused_top_naive.tif"
+INPUT="/data/dataset/sat/korea/seoul/samsung/fused_top_naive.tif"
 OUTPUT_DIR="${SCRIPT_DIR}/output/grid_search_fine"
 LOG_DIR="${OUTPUT_DIR}/logs"
 RUN_LOG="${SCRIPT_DIR}/grid_search_fine.log"

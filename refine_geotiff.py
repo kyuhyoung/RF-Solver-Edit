@@ -53,8 +53,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def read_geotiff(path, no_stretch=False):
-    """Read GeoTIFF, return (numpy HxWx3 float32 0-1, profile, stretch_params)."""
+def read_geotiff(path, no_stretch=False, gamma=0.7):
+    """Read GeoTIFF, return (numpy HxWx3 float32 0-1, profile, applied_gamma).
+
+    Preprocessing:
+      1. Read GeoTIFF
+      2. Fill nodata/zero pixels with nearest valid pixel
+      3. Range check: if max <= 255 -> keep as is; else -> percentile stretch to 0-255
+      4. /255 -> 0-1 float
+      5. Auto gamma: if median brightness < 0.4 -> apply gamma; else -> skip
+    """
     with rasterio.open(path) as src:
         profile = src.profile.copy()
         nodata = src.nodata
@@ -67,13 +75,12 @@ def read_geotiff(path, no_stretch=False):
         data = data[:, :, :3]
 
     if no_stretch:
-        # For 2-pass: input is already processed uint8, just normalize to 0-1
+        # For multi-pass: input is already processed uint8, just normalize to 0-1
         data_f = np.clip(data / 255.0, 0, 1).astype(np.float32) if data.max() > 1 else data.astype(np.float32)
-        stretch_params = {"p2": None, "p98": None, "mask": None}
         print(f"[read_geotiff] no_stretch mode: simple normalization to 0-1")
-        return data_f, profile, stretch_params
+        return data_f, profile, 1.0  # no gamma applied
 
-    # Mask nodata and all-zero pixels
+    # 1. Mask nodata and all-zero pixels
     zero_mask = np.all(data == 0, axis=-1)
     if nodata is not None:
         nodata_mask = np.any(data == nodata, axis=-1)
@@ -81,40 +88,47 @@ def read_geotiff(path, no_stretch=False):
     else:
         mask = zero_mask if zero_mask.any() else None
 
-    if mask is not None:
-        data[mask] = 0
-
-    # Percentile stretch to 0-1
-    valid = data[~mask] if mask is not None else data.reshape(-1, 3)
-    p2 = np.percentile(valid, 2, axis=0)
-    p98 = np.percentile(valid, 98, axis=0)
-    print(f"[read_geotiff] percentile stretch: p2={p2}, p98={p98}")
-
-    stretch_params = {"p2": p2, "p98": p98, "mask": mask}
-
-    for c in range(data.shape[2]):
-        rng = p98[c] - p2[c]
-        if rng < 1:
-            rng = 1
-        data[:, :, c] = (data[:, :, c] - p2[c]) / rng
-
-    data_f = np.clip(data, 0, 1).astype(np.float32)
-
-    # Fill nodata regions with nearest valid pixel
+    # 2. Fill nodata regions with nearest valid pixel
     if mask is not None and mask.any():
         from scipy.ndimage import distance_transform_edt
         _, nearest_idx = distance_transform_edt(mask, return_distances=True, return_indices=True)
-        for ch in range(data_f.shape[2]):
-            data_f[:, :, ch][mask] = data_f[:, :, ch][nearest_idx[0][mask], nearest_idx[1][mask]]
+        for ch in range(data.shape[2]):
+            data[:, :, ch][mask] = data[:, :, ch][nearest_idx[0][mask], nearest_idx[1][mask]]
         print(f"[read_geotiff] filled {mask.sum()} nodata pixels with nearest valid pixels")
-        stretch_params["mask"] = None
 
-    return data_f, profile, stretch_params
+    # 3. Range check and normalize to 0-255
+    valid = data[~mask] if mask is not None else data.reshape(-1, data.shape[2])
+    if valid.max() > 255:
+        p2 = np.percentile(valid, 2, axis=0)
+        p98 = np.percentile(valid, 98, axis=0)
+        print(f"[read_geotiff] percentile stretch: p2={p2}, p98={p98}")
+        for c in range(data.shape[2]):
+            rng = p98[c] - p2[c]
+            if rng < 1:
+                rng = 1
+            data[:, :, c] = (data[:, :, c] - p2[c]) / rng * 255
+        data = np.clip(data, 0, 255)
+    else:
+        print(f"[read_geotiff] no stretch needed (max={valid.max():.0f}, within 0-255)")
+
+    # 4. /255 -> 0-1 float
+    data_f = np.clip(data / 255.0, 0, 1).astype(np.float32)
+
+    # 5. Auto gamma: check median brightness
+    median_brightness = np.median(data_f[~mask] if mask is not None else data_f)
+    applied_gamma = 1.0
+    if median_brightness < 0.4 and gamma > 0 and gamma != 1.0:
+        print(f"[read_geotiff] dark image (median={median_brightness:.3f}), applying gamma={gamma}")
+        data_f = np.power(data_f, gamma)
+        applied_gamma = gamma
+    else:
+        print(f"[read_geotiff] brightness OK (median={median_brightness:.3f}), no gamma needed")
+
+    return data_f, profile, applied_gamma
 
 
-def save_geotiff(path, data_float, profile, stretch_params):
+def save_geotiff(path, data_float, profile):
     """Save float32 0-1 image back to GeoTIFF as uint8."""
-    # Data is already 0-1 from the generation model, just scale to 0-255
     data_out = np.clip(data_float * 255, 0, 255).astype(np.uint8)
 
     # (H, W, C) -> (C, H, W)
@@ -233,13 +247,14 @@ def refine_tile(tile_img, prompt_cache, model, ae, args):
     }
     timesteps = get_schedule(args.num_steps, inp_src["img"].shape[1], shift=(args.name != "flux-schnell"))
 
-    # Setup feature sharing info
+    # Setup feature sharing info (unique dir per process to avoid conflicts)
+    feature_dir = f"feature_tmp_{os.getpid()}"
     info = {
-        "feature_path": "feature_tmp",
+        "feature_path": feature_dir,
         "feature": {},
         "inject_step": args.inject,
     }
-    os.makedirs("feature_tmp", exist_ok=True)
+    os.makedirs(feature_dir, exist_ok=True)
 
     # RF-Solver Inversion (image -> noise)
     z, info = denoise(model, **inp_src, timesteps=timesteps, guidance=1, inverse=True, info=info)
@@ -253,6 +268,11 @@ def refine_tile(tile_img, prompt_cache, model, ae, args):
     # Decode (move back to AE device)
     batch_x = unpack(x.float(), ph, pw).to(ae_device)
     result = decode_latent(batch_x, ae, ae_device)
+
+    # Cleanup feature files
+    import shutil
+    if os.path.isdir(feature_dir):
+        shutil.rmtree(feature_dir)
 
     # Remove padding
     if h_pad > 0 or w_pad > 0:
@@ -273,17 +293,11 @@ def main():
     print(f"Input:  {args.input}")
     print(f"Output: {args.output}")
 
-    # Read GeoTIFF
+    # Read GeoTIFF (includes nodata fill, range check, auto gamma)
     print("Reading GeoTIFF...")
-    img, profile, stretch_params = read_geotiff(args.input, no_stretch=args.no_stretch)
+    img, profile, applied_gamma = read_geotiff(args.input, no_stretch=args.no_stretch, gamma=args.gamma)
     h, w, c = img.shape
     print(f"Image size: {w}x{h}, {c} bands")
-
-    # Gamma correction (skip for 2-pass)
-    gamma = args.gamma if not args.no_stretch else 1.0
-    if gamma > 0 and gamma != 1.0:
-        print(f"Applying gamma correction: {gamma}")
-        img = np.power(np.clip(img, 0, 1), gamma)
 
     # Save preview
     if args.save_preview:
@@ -352,13 +366,9 @@ def main():
     for ch in range(3):
         output[:, :, ch] /= np.maximum(weight_sum, 1e-8)
 
-    # Reverse gamma
-    if gamma > 0 and gamma != 1.0:
-        output = np.power(np.clip(output, 0, 1), 1.0 / gamma)
-
     # Save output
     print(f"Saving output: {args.output}")
-    save_geotiff(args.output, output, profile, stretch_params)
+    save_geotiff(args.output, output, profile)
     print("Done!")
 
 

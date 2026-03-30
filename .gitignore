@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 feature_tmp/
+feature_tmp_*/
 output/
 input/
 *.log
